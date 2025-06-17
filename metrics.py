@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import dataframe_image as dfi
 
 from IPython.core.display_functions import display
 from sklearn.metrics import (classification_report, precision_score, recall_score,
@@ -146,6 +147,7 @@ def compare_models(models_dict, x_test_raw, y_test_labels, device):
     print("TABELA PORÓWNAWCZA MODELI")
     print("=" * 50)
     display(styled_df)
+    dfi.export(styled_df, 'tabela_porownawcza_modeli.png', table_conversion='matplotlib')
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     fig.suptitle('Wizualne Porównanie Modeli', fontsize=16)
@@ -162,6 +164,9 @@ def compare_models(models_dict, x_test_raw, y_test_labels, device):
                 hue=results_df.index, legend=False)
     axes[1, 1].set_title('Zasoby (Rozmiar modelu)')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    plt.savefig("wizualne_porownanie_modeli.png", dpi=300, bbox_inches='tight')
+
     plt.show()
 
     print("\n\n" + "=" * 50)
@@ -191,6 +196,9 @@ def compare_models(models_dict, x_test_raw, y_test_labels, device):
     ax2.legend();
     ax2.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout();
+
+    plt.savefig("krzywe.png", dpi=300, bbox_inches='tight')
+
     plt.show()
 
     print("\n\n" + "=" * 50)
@@ -210,6 +218,9 @@ def compare_models(models_dict, x_test_raw, y_test_labels, device):
     plt.title('Porównanie uśrednionych krzywych ROC (Micro-Average)')
     plt.legend(loc="lower right");
     plt.grid(True);
+
+    plt.savefig("roc.png", dpi=300, bbox_inches='tight')
+
     plt.show()
 
     print("\n\n" + "=" * 50)
@@ -228,6 +239,9 @@ def compare_models(models_dict, x_test_raw, y_test_labels, device):
         ax.set_xlabel('Przewidziane klasy');
         ax.set_ylabel('Rzeczywiste klasy')
     plt.tight_layout();
+
+    plt.savefig("matrix.png", dpi=300, bbox_inches='tight')
+
     plt.show()
 
 
