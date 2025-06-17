@@ -46,7 +46,7 @@ def count_parameters(model):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total, trainable
 
-def compare_models(models_dict, x_test, y_test_cat, device):
+def compare_models(models_dict, x_test_, y_test_cat, device):
     """
     Porównuje wiele modeli, generując tabelę wyników, wykresy porównawcze,
     krzywe uczenia, krzywe ROC i macierze błędów.
@@ -66,7 +66,7 @@ def compare_models(models_dict, x_test, y_test_cat, device):
         model = data['model'].to(device)
         history = data['history']
         transform_ = data['transform']
-        x_transformed = [transform_(x_) for x_ in x_test]
+        x_transformed = [transform_(x_) for x_ in x_test_]
         x_test = torch.stack(x_transformed).to(device)
 
         start_time = time.time()
