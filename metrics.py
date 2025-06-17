@@ -1,8 +1,18 @@
 import os
 import tempfile
-from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, roc_curve, auc
+import torch
+
+from IPython.core.display_functions import display
+from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, roc_curve, auc, \
+    mean_squared_error, confusion_matrix
 import pandas as pd
-    from sklearn.metrics import roc_curve, auc
+from sklearn.metrics import roc_curve, auc
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+import seaborn as sns
+import tensorflow as tf
+from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_v2
 
 
 def _calculate_flops(model, input_data):
@@ -31,7 +41,12 @@ def _get_model_size_mb(model):
         model_size_mb = os.path.getsize(tmp_file.name) / (1024 ** 2)
     return model_size_mb
 
-def compare_models(models_dict, x_test, y_test_cat):
+def count_parameters(model):
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total, trainable
+
+def compare_models(models_dict, x_test, y_test_cat, device):
     """
     Porównuje wiele modeli, generując tabelę wyników, wykresy porównawcze,
     krzywe uczenia, krzywe ROC i macierze błędów.
@@ -39,44 +54,56 @@ def compare_models(models_dict, x_test, y_test_cat):
     class_names = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
                    'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
     results = []
-    y_true_labels = np.argmax(y_test_cat, axis=1)
+    y_true_labels = y_test_cat
+    y_test_cat = np.array(y_test_cat)
+    y_true_labels = torch.tensor(y_true_labels, device=device)
+    # y_true_labels = np.argmax(y_test_cat, axis=1)
 
     # KROK 1: ZBIERANIE DANYCH I PREdykcji
     print("--- Rozpoczynanie analizy modeli ---")
     for name, data in models_dict.items():
         print(f"Analizowanie: {name}...")
-        model = data['model']
+        model = data['model'].to(device)
         history = data['history']
-
-        loss, accuracy = model.evaluate(x_test, y_test_cat, verbose=0)
+        transform_ = data['transform']
+        x_transformed = [transform_(x_) for x_ in x_test]
+        x_test = torch.stack(x_transformed).to(device)
 
         start_time = time.time()
-        y_pred_proba = model.predict(x_test, verbose=0)
+        y_pred_proba = model(x_test)
         inference_time = time.time() - start_time
 
         data['y_pred_proba'] = y_pred_proba
-        y_pred_classes = np.argmax(y_pred_proba, axis=1)
+        y_pred_classes = torch.argmax(y_pred_proba, dim=1)
 
-        fpr_micro, tpr_micro, _ = roc_curve(y_test_cat.ravel(), y_pred_proba.ravel())
-        roc_auc_micro = auc(fpr_micro, tpr_micro)
+        accuracy = y_pred_classes.eq(y_true_labels).float().mean().item()
+
+        # fpr_micro, tpr_micro, _ = roc_curve(y_test_cat.ravel(), y_pred_proba.ravel())
+        # roc_auc_micro = auc(fpr_micro, tpr_micro)
 
         throughput = len(x_test) / inference_time
-        precision = precision_score(y_true_labels, y_pred_classes, average='weighted')
-        recall = recall_score(y_true_labels, y_pred_classes, average='weighted')
-        f1 = f1_score(y_true_labels, y_pred_classes, average='weighted')
-        mse = mean_squared_error(y_test_cat, y_pred_proba)
-        params = model.count_params()
-        model_size_mb = _get_model_size_mb(model)
+        precision = precision_score(y_true_labels.cpu().numpy(), y_pred_classes.cpu().numpy(), average='weighted')
+        recall = recall_score(y_true_labels.cpu().numpy(), y_pred_classes.cpu().numpy(), average='weighted')
+        f1 = f1_score(y_true_labels.cpu().numpy(), y_pred_classes.cpu().numpy(), average='weighted')
+        a = y_test_cat
+        b = y_pred_classes.detach().cpu().numpy()
+        print(a.shape)
+        print(b.shape)
+        mse = mean_squared_error(a, b)
+        params, _ = count_parameters(model)
+        # model_size_mb = _get_model_size_mb(model)
         total_flops = _calculate_flops(model, x_test[:1])
-        train_acc = history.history.get('accuracy', [0])[-1]
-        val_acc = history.history.get('val_accuracy', [0])[-1]
+        train_acc = history.get('train_acc', [0])[-1]
+        val_acc = history.get('val_accuracy', [0])[-1]
         overfit_delta = abs(train_acc - val_acc)
 
         results.append({
-            'Model': name, 'Accuracy': accuracy, 'AUC (micro)': roc_auc_micro, 'F1-score (w)': f1,
+            'Model': name, 'Accuracy': accuracy, 'F1-score (w)': f1,
+            # 'Model': name, 'Accuracy': accuracy, 'AUC (micro)': roc_auc_micro, 'F1-score (w)': f1,
             'Precision (w)': precision, 'Recall (w)': recall, 'Czas predykcji (s)': inference_time,
             'Przepustowość (próbki/s)': throughput, 'Liczba parametrów': params,
-            'Rozmiar (MB)': model_size_mb, 'FLOPS': total_flops,
+            'FLOPS': total_flops,
+            # 'Rozmiar (MB)': model_size_mb, 'FLOPS': total_flops,
             'Przeuczenie (delta)': overfit_delta, 'MSE': mse,
         })
 
