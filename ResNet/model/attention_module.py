@@ -73,8 +73,8 @@ class AttentionModule_pre(nn.Module):
         out_softmax3 = self.softmax3_blocks(out_mpool3)
         #
         out_interp3 = self.interpolation3(out_softmax3)
-        # print(out_skip2_connection.data)
-        # print(out_interp3.data)
+        # print(out_skip2_connection.data_mnist)
+        # print(out_interp3.data_mnist)
         out = out_interp3 + out_skip2_connection
         out_softmax4 = self.softmax4_blocks(out)
         out_interp2 = self.interpolation2(out_softmax4)
@@ -164,8 +164,8 @@ class AttentionModule_stage0(nn.Module):
         out = out_interp4 + out_skip3_connection
         out_softmax5 = self.softmax5_blocks(out)
         out_interp3 = self.interpolation3(out_softmax5) + out_softmax2
-        # print(out_skip2_connection.data)
-        # print(out_interp3.data)
+        # print(out_skip2_connection.data_mnist)
+        # print(out_interp3.data_mnist)
         out = out_interp3 + out_skip2_connection
         out_softmax6 = self.softmax6_blocks(out)
         out_interp2 = self.interpolation2(out_softmax6) + out_softmax1
@@ -244,8 +244,8 @@ class AttentionModule_stage1(nn.Module):
         out_softmax3 = self.softmax3_blocks(out_mpool3)
         #
         out_interp3 = self.interpolation3(out_softmax3) + out_softmax2
-        # print(out_skip2_connection.data)
-        # print(out_interp3.data)
+        # print(out_skip2_connection.data_mnist)
+        # print(out_interp3.data_mnist)
         out = out_interp3 + out_skip2_connection
         out_softmax4 = self.softmax4_blocks(out)
         out_interp2 = self.interpolation2(out_softmax4) + out_softmax1
@@ -311,8 +311,8 @@ class AttentionModule_stage2(nn.Module):
         out_softmax2 = self.softmax2_blocks(out_mpool2)
 
         out_interp2 = self.interpolation2(out_softmax2) + out_softmax1
-        # print(out_skip2_connection.data)
-        # print(out_interp3.data)
+        # print(out_skip2_connection.data_mnist)
+        # print(out_interp3.data_mnist)
         out = out_interp2 + out_skip1_connection
         out_softmax3 = self.softmax3_blocks(out)
         out_interp1 = self.interpolation1(out_softmax3) + out_trunk
@@ -420,8 +420,8 @@ class AttentionModule_stage1_cifar(nn.Module):
         out_middle_2r_blocks = self.middle_2r_blocks(out_mpool2)
         #
         out_interp = self.interpolation1(out_middle_2r_blocks) + out_down_residual_blocks1
-        # print(out_skip2_connection.data)
-        # print(out_interp3.data)
+        # print(out_skip2_connection.data_mnist)
+        # print(out_interp3.data_mnist)
         out = out_interp + out_skip1_connection
         out_up_residual_blocks1 = self.up_residual_blocks1(out)
         out_interp2 = self.interpolation2(out_up_residual_blocks1) + out_trunk
@@ -471,8 +471,8 @@ class AttentionModule_stage2_cifar(nn.Module):
         out_middle_2r_blocks = self.middle_2r_blocks(out_mpool1)
         #
         out_interp = self.interpolation1(out_middle_2r_blocks) + out_trunk
-        # print(out_skip2_connection.data)
-        # print(out_interp3.data)
+        # print(out_skip2_connection.data_mnist)
+        # print(out_interp3.data_mnist)
         out_conv1_1_blocks = self.conv1_1_blocks(out_interp)
         out = (1 + out_conv1_1_blocks) * out_trunk
         out_last = self.last_blocks(out)

@@ -3,16 +3,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
-from torch.utils.data import Dataset, DataLoader
 import numpy as np
-import torchvision
-from torchvision import transforms, datasets, models
-import os
+from torchvision import transforms, datasets
 import cv2
 import time
 # from model.residual_attention_network_pre import ResidualAttentionModel
 # based https://github.com/liudaizong/Residual-Attention-Network
-from model.residual_attention_network import ResidualAttentionModel_92_32input_update as ResidualAttentionModel
+from ResNet.model.residual_attention_network import ResidualAttentionModel_92_32input_update as ResidualAttentionModel
 
 model_file = 'model_92_sgd_mixup300_normal20.pkl'
 
@@ -86,12 +83,12 @@ test_transform = transforms.Compose([
 ])
 # when image is rgb, totensor do the division 255
 # CIFAR-10 Dataset
-train_dataset = datasets.CIFAR10(root='./data/',
+train_dataset = datasets.CIFAR10(root='./data_mnist/',
                                train=True,
                                transform=transform,
                                download=True)
 
-test_dataset = datasets.CIFAR10(root='./data/',
+test_dataset = datasets.CIFAR10(root='./data_mnist/',
                               train=False,
                               transform=test_transform)
 
@@ -139,7 +136,7 @@ if is_train is True:
                 optimizer.step()
             else:
                 images = Variable(images.cuda())
-                # print(images.data)
+                # print(images.data_mnist)
                 labels = Variable(labels.cuda())
                 # Forward + Backward + Optimize
                 optimizer.zero_grad()
