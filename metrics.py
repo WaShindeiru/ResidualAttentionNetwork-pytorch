@@ -1,7 +1,9 @@
 import os
 import tempfile
-from sklearn.metrics import classification_report, precision_score, recall_score, f1_score
-import pandas as pd 
+from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, roc_curve, auc
+import pandas as pd
+    from sklearn.metrics import roc_curve, auc
+
 
 def _calculate_flops(model, input_data):
 
@@ -30,11 +32,15 @@ def _get_model_size_mb(model):
     return model_size_mb
 
 def compare_models(models_dict, x_test, y_test_cat):
+    """
+    Porównuje wiele modeli, generując tabelę wyników, wykresy porównawcze,
+    krzywe uczenia, krzywe ROC i macierze błędów.
+    """
     class_names = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
-                       'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
+                   'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
     results = []
     y_true_labels = np.argmax(y_test_cat, axis=1)
-    
+
     # KROK 1: ZBIERANIE DANYCH I PREdykcji
     print("--- Rozpoczynanie analizy modeli ---")
     for name, data in models_dict.items():
@@ -43,15 +49,17 @@ def compare_models(models_dict, x_test, y_test_cat):
         history = data['history']
 
         loss, accuracy = model.evaluate(x_test, y_test_cat, verbose=0)
-        
+
         start_time = time.time()
         y_pred_proba = model.predict(x_test, verbose=0)
         inference_time = time.time() - start_time
-        
+
         data['y_pred_proba'] = y_pred_proba
-        
         y_pred_classes = np.argmax(y_pred_proba, axis=1)
-        
+
+        fpr_micro, tpr_micro, _ = roc_curve(y_test_cat.ravel(), y_pred_proba.ravel())
+        roc_auc_micro = auc(fpr_micro, tpr_micro)
+
         throughput = len(x_test) / inference_time
         precision = precision_score(y_true_labels, y_pred_classes, average='weighted')
         recall = recall_score(y_true_labels, y_pred_classes, average='weighted')
@@ -65,28 +73,29 @@ def compare_models(models_dict, x_test, y_test_cat):
         overfit_delta = abs(train_acc - val_acc)
 
         results.append({
-            'Model': name, 'Accuracy': accuracy, 'F1-score (w)': f1, 'Precision (w)': precision,
-            'Recall (w)': recall, 'Czas predykcji (s)': inference_time, 'Przepustowość (próbki/s)': throughput,
-            'Liczba parametrów': params, 'Rozmiar (MB)': model_size_mb, 'FLOPS': total_flops,
+            'Model': name, 'Accuracy': accuracy, 'AUC (micro)': roc_auc_micro, 'F1-score (w)': f1,
+            'Precision (w)': precision, 'Recall (w)': recall, 'Czas predykcji (s)': inference_time,
+            'Przepustowość (próbki/s)': throughput, 'Liczba parametrów': params,
+            'Rozmiar (MB)': model_size_mb, 'FLOPS': total_flops,
             'Przeuczenie (delta)': overfit_delta, 'MSE': mse,
         })
 
     results_df = pd.DataFrame(results).set_index('Model')
-    
-    # KROK 2: TABELA I WYKRESY SŁUPKOWE (bez zmian)
-    higher_is_better = ['Accuracy', 'F1-score (w)', 'Precision (w)', 'Recall (w)', 'Przepustowość (próbki/s)']
+
+    # KROK 2: TABELA I WYKRESY SŁUPKOWE
+    higher_is_better = ['Accuracy', 'AUC (micro)', 'F1-score (w)', 'Precision (w)', 'Recall (w)', 'Przepustowość (próbki/s)']
     lower_is_better = ['Czas predykcji (s)', 'Liczba parametrów', 'Rozmiar (MB)', 'FLOPS', 'Przeuczenie (delta)', 'MSE']
-    
+
     styled_df = results_df.style.background_gradient(cmap='Greens', subset=higher_is_better) \
                                .background_gradient(cmap='Greens_r', subset=lower_is_better) \
-                               .format('{:.4f}', subset=pd.IndexSlice[:, ['Accuracy', 'F1-score (w)', 'Precision (w)', 'Recall (w)', 'Przeuczenie (delta)', 'MSE']]) \
+                               .format('{:.4f}', subset=pd.IndexSlice[:, ['Accuracy', 'AUC (micro)', 'F1-score (w)', 'Precision (w)', 'Recall (w)', 'Przeuczenie (delta)', 'MSE']]) \
                                .format({'Czas predykcji (s)': '{:.3f}', 'Przepustowość (próbki/s)': '{:,.0f}', 'Liczba parametrów': '{:,}', 'Rozmiar (MB)': '{:.2f}', 'FLOPS': '{:,}'})
-    
+
     print("\n\n" + "="*50)
     print("🏆 TABELA PORÓWNAWCZA MODELI 🏆")
     print("="*50)
     display(styled_df)
-    
+
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     fig.suptitle('Wizualne Porównanie Modeli', fontsize=16)
     sns.barplot(x=results_df.index, y=results_df['Accuracy'], ax=axes[0, 0], palette='viridis', hue=results_df.index, legend=False)
@@ -104,17 +113,17 @@ def compare_models(models_dict, x_test, y_test_cat):
     print("\n\n" + "="*50)
     print("🧠 PORÓWNANIE KRZYWYCH UCZENIA 🧠")
     print("="*50)
-    
+
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-    
+
     num_models = len(models_dict)
-    cmap = plt.get_cmap('tab10') 
+    cmap = plt.get_cmap('tab10')
     colors = [cmap(i) for i in np.linspace(0, 1, num_models)]
 
     for (name, data), color in zip(models_dict.items(), colors):
         history = data['history']
-        
- 
+
+
         if 'accuracy' in history.history and 'val_accuracy' in history.history:
             ax1.plot(history.history['accuracy'], color=color, linestyle='-', label=f'{name} Train')
             ax1.plot(history.history['val_accuracy'], color=color, linestyle='--', label=f'{name} Val')
@@ -134,10 +143,10 @@ def compare_models(models_dict, x_test, y_test_cat):
     ax2.set_ylabel('Strata')
     ax2.legend()
     ax2.grid(True, linestyle='--', alpha=0.6)
-    
+
     plt.tight_layout()
     plt.show()
-    
+
     # KROK 4: PORÓWNANIE KRZYWYCH ROC (MICRO-AVERAGE)
     print("\n\n" + "="*50)
     print("📈 PORÓWNANIE KRZYWYCH ROC (Uśrednione) 📈")
@@ -164,9 +173,9 @@ def compare_models(models_dict, x_test, y_test_cat):
     print("="*50)
     num_models = len(models_dict)
     fig, axes = plt.subplots(1, num_models, figsize=(6 * num_models, 5))
-    if num_models == 1: 
+    if num_models == 1:
         axes = [axes]
-    
+
     for ax, (name, data) in zip(axes, models_dict.items()):
         y_pred_classes = np.argmax(data['y_pred_proba'], axis=1)
         cm = confusion_matrix(y_true_labels, y_pred_classes)
@@ -178,16 +187,23 @@ def compare_models(models_dict, x_test, y_test_cat):
     plt.tight_layout()
     plt.show()
 
-def Show_Model_Statistics(cnn_model, history, class_names=None):
-    loss, accuracy = cnn_model.evaluate(x_test_cnn, y_test_cat)
+def Show_Model_Statistics(cnn_model, history, x_test_cnn, y_test_cat, class_names=None):
+    """
+    Wyświetla szczegółowe statystyki i wizualizacje dla pojedynczego modelu.
+    """
+    loss, accuracy = cnn_model.evaluate(x_test_cnn, y_test_cat, verbose=0)
     y_pred = cnn_model.predict(x_test_cnn)
     mse = mean_squared_error(y_test_cat, y_pred)
 
+    fpr, tpr, _ = roc_curve(y_test_cat.ravel(), y_pred.ravel())
+    roc_auc_micro = auc(fpr, tpr)
+
     print(f'\n📈 Test accuracy: {accuracy:.4f}')
+    print(f'📊 Pole pod krzywą ROC (AUC micro): {roc_auc_micro:.4f}')
     print(f'📉 Mean Squared Error: {mse:.4f}')
 
     start_time = time.time()
-    _ = cnn_model.predict(x_test_cnn)
+    _ = cnn_model.predict(x_test_cnn, verbose=0)
     end_time = time.time()
     elapsed = end_time - start_time
     throughput = len(x_test_cnn) / elapsed
@@ -195,19 +211,19 @@ def Show_Model_Statistics(cnn_model, history, class_names=None):
     print(f'⚡ Przepustowość: {throughput:.2f} próbek/sekundę')
 
     print("\n⚙️ Szacowanie FLOPS:")
-    input_data_flops = x_test_cnn[:1] if len(x_test_cnn) > 0 else tf.random.uniform(cnn_model.inputs[0].shape)
+    if len(x_test_cnn) > 0:
+        input_data_flops = x_test_cnn[:1]
+    else:
+        input_shape = cnn_model.inputs[0].shape[1:]
+        input_data_flops = tf.random.uniform([1] + list(input_shape))
+
     total_flops = _calculate_flops(cnn_model, input_data_flops)
     print(f"Total estimated FLOPS: {total_flops:,}")
 
-
     print(f"\n📦 Liczba parametrów w modelu: {cnn_model.count_params():,}")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".keras") as tmp_file:
-        cnn_model.save(tmp_file.name)
-        model_size = os.path.getsize(tmp_file.name) / (1024 ** 2)
-    os.remove(tmp_file.name)
-    print(f"💾 Rozmiar modelu: {model_size:.2f} MB")
-
+    model_size_mb = _get_model_size_mb(cnn_model)
+    print(f"💾 Rozmiar modelu: {model_size_mb:.2f} MB")
 
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
@@ -263,11 +279,12 @@ def Show_Model_Statistics(cnn_model, history, class_names=None):
     y_pred_classes = y_pred.argmax(axis=1)
 
     cm = confusion_matrix(y_true, y_pred_classes)
-    plt.figure(figsize=(6, 4))
+    plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_names, yticklabels=class_names)
     plt.xlabel("Przewidziane klasy")
     plt.ylabel("Rzeczywiste klasy")
     plt.title("Macierz błędów")
+    plt.tight_layout()
     plt.show()
 
     try:
