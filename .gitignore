@@ -7,3 +7,6 @@ ResNet/weights
 
 VisionTransformer/results/*
 VisionTransformer/weights/*
+
+CrossVisionTransformer/weights/*
+CrossVisionTransformer/results/*
