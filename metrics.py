@@ -1,339 +1,351 @@
+# POCZĄTEK PLIKU METRICS.PY
 import os
+import time
 import tempfile
+import warnings
+import io  # <-- KLUCZOWY IMPORT
+
 import torch
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 from IPython.core.display_functions import display
-from sklearn.metrics import classification_report, precision_score, recall_score, f1_score, roc_curve, auc, \
-    mean_squared_error, confusion_matrix
-import pandas as pd
-from sklearn.metrics import roc_curve, auc
-import numpy as np
-import matplotlib.pyplot as plt
-import time
-import seaborn as sns
-import tensorflow as tf
-from tensorflow.python.framework.convert_to_constants import convert_variables_to_constants_v2
+from sklearn.metrics import (classification_report, precision_score, recall_score,
+                             f1_score, roc_curve, auc, mean_squared_error, confusion_matrix)
+
+try:
+    from fvcore.nn import FlopCountAnalysis
+except ImportError:
+    print("Ostrzeżenie: Biblioteka fvcore nie jest zainstalowana. Nie będzie można obliczyć FLOPS.")
+    print("Aby ją zainstalować, uruchom: pip install fvcore")
+    FlopCountAnalysis = None
 
 
-def _calculate_flops(model, input_data):
-
-    try:
-        concrete_func = tf.function(lambda x: model(x)).get_concrete_function(
-            tf.TensorSpec(input_data.shape, model.inputs[0].dtype)
-        )
-        frozen_func = convert_variables_to_constants_v2(concrete_func)
-        graph_def = frozen_func.graph.as_graph_def()
-
-        with tf.Graph().as_default() as graph:
-            tf.import_graph_def(graph_def, name='')
-            run_meta = tf.compat.v1.RunMetadata()
-            opts = tf.compat.v1.profiler.ProfileOptionBuilder.float_operation()
-            flops = tf.compat.v1.profiler.profile(
-                graph=graph, run_meta=run_meta, cmd='op', options=opts
-            )
-        return flops.total_float_ops if flops else 0
-    except Exception as e:
-        print(f"⚠️ Ostrzeżenie: Nie udało się obliczyć FLOPS. Błąd: {e}")
+def _calculate_pytorch_flops(model, input_tensor):
+    """Oblicza FLOPS dla modelu PyTorch."""
+    if FlopCountAnalysis is None:
         return 0
-def _get_model_size_mb(model):
-    with tempfile.NamedTemporaryFile(suffix=".keras", delete=True) as tmp_file:
-        model.save(tmp_file.name)
-        model_size_mb = os.path.getsize(tmp_file.name) / (1024 ** 2)
-    return model_size_mb
+    try:
+        model.eval()
+        flops = FlopCountAnalysis(model, input_tensor)
+        return flops.total()
+    except Exception as e:
+        warnings.warn(f"Nie udało się obliczyć FLOPS. Błąd: {e}")
+        return 0
 
-def count_parameters(model):
+
+def _get_pytorch_model_size_mb(model):
+    """Oblicza rozmiar modelu PyTorch w MB, zapisując go do bufora w pamięci."""
+    try:
+        buffer = io.BytesIO()
+        torch.save(model.state_dict(), buffer)
+        model_size_mb = buffer.tell() / (1024 ** 2)
+        return model_size_mb
+    except Exception as e:
+        warnings.warn(f"Nie udało się obliczyć rozmiaru modelu. Błąd: {e}")
+        return 0
+
+
+def _count_pytorch_parameters(model):
+    """Zlicza parametry w modelu PyTorch."""
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return total, trainable
 
-def compare_models(models_dict, x_test_, y_test_cat, device):
+
+def compare_models(models_dict, x_test_raw, y_test_labels, device):
     """
-    Porównuje wiele modeli, generując tabelę wyników, wykresy porównawcze,
+    Porównuje wiele modeli PyTorch, generując tabelę wyników, wykresy porównawcze,
     krzywe uczenia, krzywe ROC i macierze błędów.
     """
     class_names = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
                    'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
     results = []
-    y_true_labels = y_test_cat
-    y_test_cat = np.array(y_test_cat)
-    y_true_labels = torch.tensor(y_true_labels, device=device)
-    # y_true_labels = np.argmax(y_test_cat, axis=1)
 
-    # KROK 1: ZBIERANIE DANYCH I PREdykcji
+    y_true_tensor = torch.tensor(y_test_labels, dtype=torch.long).to(device)
+    y_true_one_hot_np = np.eye(len(class_names))[y_test_labels]
+
     print("--- Rozpoczynanie analizy modeli ---")
     for name, data in models_dict.items():
         print(f"Analizowanie: {name}...")
         model = data['model'].to(device)
-        history = data['history']
-        transform_ = data['transform']
-        x_transformed = [transform_(x_) for x_ in x_test_]
-        x_test = torch.stack(x_transformed).to(device)
+        history = data.get('history', {})
+        transform = data['transform']
 
-        start_time = time.time()
-        y_pred_proba = model(x_test)
-        inference_time = time.time() - start_time
+        model.eval()
 
-        data['y_pred_proba'] = y_pred_proba
-        y_pred_classes = torch.argmax(y_pred_proba, dim=1)
+        x_transformed = [transform(x) for x in x_test_raw]
+        x_test_tensor = torch.stack(x_transformed).to(device)
 
-        accuracy = y_pred_classes.eq(y_true_labels).float().mean().item()
+        with torch.no_grad():
+            start_time = time.time()
 
-        # fpr_micro, tpr_micro, _ = roc_curve(y_test_cat.ravel(), y_pred_proba.ravel())
-        # roc_auc_micro = auc(fpr_micro, tpr_micro)
+            if name != "VGG":
+                y_pred_logits = model(x_test_tensor)
+            else:
+                y_pred_logits, _, _ = model(x_test_tensor)
 
-        throughput = len(x_test) / inference_time
-        precision = precision_score(y_true_labels.cpu().numpy(), y_pred_classes.cpu().numpy(), average='weighted')
-        recall = recall_score(y_true_labels.cpu().numpy(), y_pred_classes.cpu().numpy(), average='weighted')
-        f1 = f1_score(y_true_labels.cpu().numpy(), y_pred_classes.cpu().numpy(), average='weighted')
-        a = y_test_cat
-        b = y_pred_classes.detach().cpu().numpy()
-        print(a.shape)
-        print(b.shape)
-        mse = mean_squared_error(a, b)
-        params, _ = count_parameters(model)
-        # model_size_mb = _get_model_size_mb(model)
-        total_flops = _calculate_flops(model, x_test[:1])
+            inference_time = time.time() - start_time
+
+            y_pred_proba = torch.softmax(y_pred_logits, dim=1)
+            y_pred_classes = torch.argmax(y_pred_logits, dim=1)
+
+        y_true_np = y_true_tensor.cpu().numpy()
+        y_pred_classes_np = y_pred_classes.cpu().numpy()
+        y_pred_proba_np = y_pred_proba.cpu().numpy()
+
+        accuracy = (y_pred_classes == y_true_tensor).float().mean().item()
+
+        fpr_micro, tpr_micro, _ = roc_curve(y_true_one_hot_np.ravel(), y_pred_proba_np.ravel())
+        roc_auc_micro = auc(fpr_micro, tpr_micro)
+
+        throughput = len(x_test_tensor) / inference_time
+        precision = precision_score(y_true_np, y_pred_classes_np, average='weighted', zero_division=0)
+        recall = recall_score(y_true_np, y_pred_classes_np, average='weighted', zero_division=0)
+        f1 = f1_score(y_true_np, y_pred_classes_np, average='weighted', zero_division=0)
+        mse = mean_squared_error(y_true_np, y_pred_classes_np)
+
+        params, _ = _count_pytorch_parameters(model)
+        model_size_mb = _get_pytorch_model_size_mb(model)  # Ta linia teraz użyje poprawionej funkcji
+        total_flops = _calculate_pytorch_flops(model, x_test_tensor[:1])
+
         train_acc = history.get('train_acc', [0])[-1]
-        val_acc = history.get('val_accuracy', [0])[-1]
+        val_acc = history.get('val_acc', [0])[-1]
         overfit_delta = abs(train_acc - val_acc)
 
+        data['y_pred_proba_np'] = y_pred_proba_np
+        data['y_pred_classes_np'] = y_pred_classes_np
+
         results.append({
-            'Model': name, 'Accuracy': accuracy, 'F1-score (w)': f1,
-            # 'Model': name, 'Accuracy': accuracy, 'AUC (micro)': roc_auc_micro, 'F1-score (w)': f1,
+            'Model': name, 'Accuracy': accuracy, 'AUC (micro)': roc_auc_micro, 'F1-score (w)': f1,
             'Precision (w)': precision, 'Recall (w)': recall, 'Czas predykcji (s)': inference_time,
             'Przepustowość (próbki/s)': throughput, 'Liczba parametrów': params,
-            'FLOPS': total_flops,
-            # 'Rozmiar (MB)': model_size_mb, 'FLOPS': total_flops,
+            'Rozmiar (MB)': model_size_mb, 'FLOPS': total_flops,
             'Przeuczenie (delta)': overfit_delta, 'MSE': mse,
         })
 
     results_df = pd.DataFrame(results).set_index('Model')
 
-    # KROK 2: TABELA I WYKRESY SŁUPKOWE
-    higher_is_better = ['Accuracy', 'AUC (micro)', 'F1-score (w)', 'Precision (w)', 'Recall (w)', 'Przepustowość (próbki/s)']
+    higher_is_better = ['Accuracy', 'AUC (micro)', 'F1-score (w)', 'Precision (w)', 'Recall (w)',
+                        'Przepustowość (próbki/s)']
     lower_is_better = ['Czas predykcji (s)', 'Liczba parametrów', 'Rozmiar (MB)', 'FLOPS', 'Przeuczenie (delta)', 'MSE']
 
-    styled_df = results_df.style.background_gradient(cmap='Greens', subset=higher_is_better) \
-                               .background_gradient(cmap='Greens_r', subset=lower_is_better) \
-                               .format('{:.4f}', subset=pd.IndexSlice[:, ['Accuracy', 'AUC (micro)', 'F1-score (w)', 'Precision (w)', 'Recall (w)', 'Przeuczenie (delta)', 'MSE']]) \
-                               .format({'Czas predykcji (s)': '{:.3f}', 'Przepustowość (próbki/s)': '{:,.0f}', 'Liczba parametrów': '{:,}', 'Rozmiar (MB)': '{:.2f}', 'FLOPS': '{:,}'})
+    valid_higher = [col for col in higher_is_better if col in results_df.columns]
+    valid_lower = [col for col in lower_is_better if col in results_df.columns]
 
-    print("\n\n" + "="*50)
-    print("🏆 TABELA PORÓWNAWCZA MODELI 🏆")
-    print("="*50)
+    styled_df = results_df.style.background_gradient(cmap='Greens', subset=valid_higher) \
+        .background_gradient(cmap='Greens_r', subset=valid_lower) \
+        .format('{:.4f}', subset=[c for c in ['Accuracy', 'AUC (micro)', 'F1-score (w)', 'Precision (w)', 'Recall (w)',
+                                              'Przeuczenie (delta)', 'MSE'] if c in results_df.columns]) \
+        .format({'Czas predykcji (s)': '{:.3f}', 'Przepustowość (próbki/s)': '{:,.0f}', 'Liczba parametrów': '{:,}',
+                 'Rozmiar (MB)': '{:.2f}', 'FLOPS': '{:,.0f}'})
+
+    print("\n\n" + "=" * 50)
+    print("TABELA PORÓWNAWCZA MODELI")
+    print("=" * 50)
     display(styled_df)
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     fig.suptitle('Wizualne Porównanie Modeli', fontsize=16)
-    sns.barplot(x=results_df.index, y=results_df['Accuracy'], ax=axes[0, 0], palette='viridis', hue=results_df.index, legend=False)
+    sns.barplot(x=results_df.index, y=results_df['Accuracy'], ax=axes[0, 0], palette='viridis', hue=results_df.index,
+                legend=False)
     axes[0, 0].set_title('Dokładność (Accuracy)')
-    sns.barplot(x=results_df.index, y=results_df['F1-score (w)'], ax=axes[0, 1], palette='plasma', hue=results_df.index, legend=False)
+    sns.barplot(x=results_df.index, y=results_df['F1-score (w)'], ax=axes[0, 1], palette='plasma', hue=results_df.index,
+                legend=False)
     axes[0, 1].set_title('F1-score (ważony)')
-    sns.barplot(x=results_df.index, y=results_df['Przepustowość (próbki/s)'], ax=axes[1, 0], palette='magma', hue=results_df.index, legend=False)
+    sns.barplot(x=results_df.index, y=results_df['Przepustowość (próbki/s)'], ax=axes[1, 0], palette='magma',
+                hue=results_df.index, legend=False)
     axes[1, 0].set_title('Wydajność (Przepustowość)')
-    sns.barplot(x=results_df.index, y=results_df['Rozmiar (MB)'], ax=axes[1, 1], palette='cividis', hue=results_df.index, legend=False)
+    sns.barplot(x=results_df.index, y=results_df['Rozmiar (MB)'], ax=axes[1, 1], palette='cividis',
+                hue=results_df.index, legend=False)
     axes[1, 1].set_title('Zasoby (Rozmiar modelu)')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
 
-    # KROK 3: PORÓWNANIE KRZYWYCH UCZENIA (Wersja z ujednoliconymi kolorami)
-    print("\n\n" + "="*50)
-    print("🧠 PORÓWNANIE KRZYWYCH UCZENIA 🧠")
-    print("="*50)
-
+    print("\n\n" + "=" * 50)
+    print("PORÓWNANIE KRZYWYCH UCZENIA")
+    print("=" * 50)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
     num_models = len(models_dict)
     cmap = plt.get_cmap('tab10')
     colors = [cmap(i) for i in np.linspace(0, 1, num_models)]
 
     for (name, data), color in zip(models_dict.items(), colors):
-        history = data['history']
+        history = data.get('history', {})
+        if history:
+            # ax1.plot(history.get('train_acc', []), color=color, linestyle='-', label=f'{name} Train Acc')
+            ax1.plot(history.get('val_acc', []), color=color, linestyle='--', label=f'{name} Val Acc')
+            # ax2.plot(history.get('loss', []), color=color, linestyle='-', label=f'{name} Train Loss')
+            ax2.plot(history.get('val_loss', []), color=color, linestyle='--', label=f'{name} Val Loss')
 
-
-        if 'accuracy' in history.history and 'val_accuracy' in history.history:
-            ax1.plot(history.history['accuracy'], color=color, linestyle='-', label=f'{name} Train')
-            ax1.plot(history.history['val_accuracy'], color=color, linestyle='--', label=f'{name} Val')
-
-        if 'loss' in history.history and 'val_loss' in history.history:
-            ax2.plot(history.history['loss'], color=color, linestyle='-', label=f'{name} Train')
-            ax2.plot(history.history['val_loss'], color=color, linestyle='--', label=f'{name} Val')
-
-    ax1.set_title('Porównanie Dokładności (Accuracy)')
-    ax1.set_xlabel('Epoka')
+    ax1.set_title('Porównanie Dokładności (Accuracy)');
+    ax1.set_xlabel('Epoka');
     ax1.set_ylabel('Dokładność')
-    ax1.legend()
+    ax1.legend();
     ax1.grid(True, linestyle='--', alpha=0.6)
-
-    ax2.set_title('Porównanie Straty (Loss)')
-    ax2.set_xlabel('Epoka')
+    ax2.set_title('Porównanie Straty (Loss)');
+    ax2.set_xlabel('Epoka');
     ax2.set_ylabel('Strata')
-    ax2.legend()
+    ax2.legend();
     ax2.grid(True, linestyle='--', alpha=0.6)
-
-    plt.tight_layout()
+    plt.tight_layout();
     plt.show()
 
-    # KROK 4: PORÓWNANIE KRZYWYCH ROC (MICRO-AVERAGE)
-    print("\n\n" + "="*50)
-    print("📈 PORÓWNANIE KRZYWYCH ROC (Uśrednione) 📈")
-    print("="*50)
+    print("\n\n" + "=" * 50)
+    print("PORÓWNANIE KRZYWYCH ROC (Uśrednione)")
+    print("=" * 50)
     plt.figure(figsize=(10, 8))
     for name, data in models_dict.items():
-        y_pred_proba = data['y_pred_proba']
-        fpr, tpr, _ = roc_curve(y_test_cat.ravel(), y_pred_proba.ravel())
+        y_pred_proba_np = data['y_pred_proba_np']
+        fpr, tpr, _ = roc_curve(y_true_one_hot_np.ravel(), y_pred_proba_np.ravel())
         roc_auc = auc(fpr, tpr)
         plt.plot(fpr, tpr, lw=2, label=f'{name} (AUC = {roc_auc:.3f})')
     plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Losowy klasyfikator')
-    plt.xlim([0.0, 1.0])
+    plt.xlim([0.0, 1.0]);
     plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
+    plt.xlabel('False Positive Rate');
     plt.ylabel('True Positive Rate')
     plt.title('Porównanie uśrednionych krzywych ROC (Micro-Average)')
-    plt.legend(loc="lower right")
-    plt.grid(True)
+    plt.legend(loc="lower right");
+    plt.grid(True);
     plt.show()
 
-    # KROK 5: PORÓWNANIE MACIERZY BŁĘDÓW
-    print("\n\n" + "="*50)
-    print("🔢 PORÓWNANIE MACIERZY BŁĘDÓW 🔢")
-    print("="*50)
+    print("\n\n" + "=" * 50)
+    print("PORÓWNANIE MACIERZY BŁĘDÓW")
+    print("=" * 50)
     num_models = len(models_dict)
-    fig, axes = plt.subplots(1, num_models, figsize=(6 * num_models, 5))
-    if num_models == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(1, num_models, figsize=(6 * num_models, 5), squeeze=False)
+    axes = axes.flatten()
 
     for ax, (name, data) in zip(axes, models_dict.items()):
-        y_pred_classes = np.argmax(data['y_pred_proba'], axis=1)
-        cm = confusion_matrix(y_true_labels, y_pred_classes)
+        y_pred_classes_np = data['y_pred_classes_np']
+        cm = confusion_matrix(y_true_np, y_pred_classes_np)
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax,
                     xticklabels=class_names, yticklabels=class_names)
         ax.set_title(f'Macierz błędów dla: {name}')
-        ax.set_xlabel('Przewidziane klasy')
+        ax.set_xlabel('Przewidziane klasy');
         ax.set_ylabel('Rzeczywiste klasy')
-    plt.tight_layout()
+    plt.tight_layout();
     plt.show()
 
-def Show_Model_Statistics(cnn_model, history, x_test_cnn, y_test_cat, class_names=None):
-    """
-    Wyświetla szczegółowe statystyki i wizualizacje dla pojedynczego modelu.
-    """
-    loss, accuracy = cnn_model.evaluate(x_test_cnn, y_test_cat, verbose=0)
-    y_pred = cnn_model.predict(x_test_cnn)
-    mse = mean_squared_error(y_test_cat, y_pred)
 
-    fpr, tpr, _ = roc_curve(y_test_cat.ravel(), y_pred.ravel())
-    roc_auc_micro = auc(fpr, tpr)
+def show_pytorch_model_stats(model, history, test_loader, device, class_names=None):
+    """
+    Wyświetla szczegółowe statystyki i wizualizacje dla pojedynczego modelu PyTorch.
+    """
+    if class_names is None:
+        class_names = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
+                       'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
 
-    print(f'\n📈 Test accuracy: {accuracy:.4f}')
-    print(f'📊 Pole pod krzywą ROC (AUC micro): {roc_auc_micro:.4f}')
-    print(f'📉 Mean Squared Error: {mse:.4f}')
+    model.to(device)
+    model.eval()
+
+    all_preds, all_labels, all_probas = [], [], []
 
     start_time = time.time()
-    _ = cnn_model.predict(x_test_cnn, verbose=0)
-    end_time = time.time()
-    elapsed = end_time - start_time
-    throughput = len(x_test_cnn) / elapsed
-    print(f'⏱️ Czas predykcji: {elapsed:.4f} sekund')
-    print(f'⚡ Przepustowość: {throughput:.2f} próbek/sekundę')
+    with torch.no_grad():
+        for data, labels in test_loader:
+            data, labels = data.to(device), labels.to(device)
 
-    print("\n⚙️ Szacowanie FLOPS:")
-    if len(x_test_cnn) > 0:
-        input_data_flops = x_test_cnn[:1]
-    else:
-        input_shape = cnn_model.inputs[0].shape[1:]
-        input_data_flops = tf.random.uniform([1] + list(input_shape))
+            outputs = model(data)
+            probas = torch.softmax(outputs, dim=1)
+            _, predicted = torch.max(outputs.data, 1)
 
-    total_flops = _calculate_flops(cnn_model, input_data_flops)
-    print(f"Total estimated FLOPS: {total_flops:,}")
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            all_probas.extend(probas.cpu().numpy())
 
-    print(f"\n📦 Liczba parametrów w modelu: {cnn_model.count_params():,}")
+    inference_time = time.time() - start_time
 
-    model_size_mb = _get_model_size_mb(cnn_model)
-    print(f"💾 Rozmiar modelu: {model_size_mb:.2f} MB")
+    y_true = np.array(all_labels)
+    y_pred_classes = np.array(all_preds)
+    y_pred_proba = np.array(all_probas)
+
+    accuracy = np.mean(y_true == y_pred_classes)
+    y_true_one_hot = np.eye(len(class_names))[y_true]
+    fpr_micro, tpr_micro, _ = roc_curve(y_true_one_hot.ravel(), y_pred_proba.ravel())
+    roc_auc_micro = auc(fpr_micro, tpr_micro)
+    mse = mean_squared_error(y_true, y_pred_classes)
+    throughput = len(y_true) / inference_time
+
+    print(f'\nTest accuracy: {accuracy:.4f}')
+    print(f'Pole pod krzywą ROC (AUC micro): {roc_auc_micro:.4f}')
+    print(f'Mean Squared Error: {mse:.4f}')
+    print(f'Czas predykcji: {inference_time:.4f} sekund')
+    print(f'Przepustowość: {throughput:.2f} próbek/sekundę')
+
+    sample_input, _ = next(iter(test_loader))
+    total_flops = _calculate_pytorch_flops(model, sample_input[:1].to(device))
+    print(f"\nSzacowane FLOPS: {total_flops:,.0f}")
+
+    params, _ = _count_pytorch_parameters(model)
+    print(f"Liczba parametrów w modelu: {params:,}")
+
+    model_size_mb = _get_pytorch_model_size_mb(model)  # Ta linia teraz użyje poprawionej funkcji
+    print(f"Rozmiar modelu: {model_size_mb:.2f} MB")
 
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
-    if 'accuracy' in history.history and 'val_accuracy' in history.history:
-        plt.plot(history.history['accuracy'], label='Train Accuracy')
-        plt.plot(history.history['val_accuracy'], label='Val Accuracy')
-        plt.title('Accuracy over Epochs')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy')
+    if history and 'train_acc' in history and 'val_acc' in history:
+        plt.plot(history['train_acc'], label='Train Accuracy')
+        plt.plot(history['val_acc'], label='Val Accuracy')
+        plt.title('Accuracy over Epochs');
+        plt.xlabel('Epoch');
+        plt.ylabel('Accuracy');
         plt.legend()
     else:
-        print("⚠️ Warning: 'accuracy' or 'val_accuracy' not found in history.")
-
+        print("Ostrzeżenie: Brak kluczy 'train_acc' lub 'val_acc' w historii.")
 
     plt.subplot(1, 2, 2)
-    if 'loss' in history.history and 'val_loss' in history.history:
-        plt.plot(history.history['loss'], label='Train Loss')
-        plt.plot(history.history['val_loss'], label='Val Loss')
-        plt.title('Loss over Epochs')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
+    if history and 'train_loss' in history and 'val_loss' in history:
+        plt.plot(history['train_loss'], label='Train Loss')
+        plt.plot(history['val_loss'], label='Val Loss')
+        plt.title('Loss over Epochs');
+        plt.xlabel('Epoch');
+        plt.ylabel('Loss');
         plt.legend()
     else:
-         print("⚠️ Warning: 'loss' or 'val_loss' not found in history.")
-
-    plt.tight_layout()
+        print("Ostrzeżenie: Brak kluczy 'train_loss' lub 'val_loss' w historii.")
+    plt.tight_layout();
     plt.show()
-    print("\n📊 ROC Curve (per class):")
-    plt.figure(figsize=(10, 8))
-    if class_names is None:
-        class_names = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
-                       'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
 
-    for i in range(y_test_cat.shape[1]):
-        fpr, tpr, _ = roc_curve(y_test_cat[:, i], y_pred[:, i])
+    print("\nKrzywe ROC (dla każdej klasy):")
+    plt.figure(figsize=(10, 8))
+    for i in range(len(class_names)):
+        fpr, tpr, _ = roc_curve(y_true_one_hot[:, i], y_pred_proba[:, i])
         roc_auc = auc(fpr, tpr)
-        plt.plot(fpr, tpr, lw=2, label=f'ROC curve for class {class_names[i]} (area = {roc_auc:.2f})')
+        plt.plot(fpr, tpr, lw=2, label=f'Klasa {class_names[i]} (AUC = {roc_auc:.2f})')
 
     plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-    plt.xlim([0.0, 1.0])
+    plt.xlim([0.0, 1.0]);
     plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate')
+    plt.xlabel('False Positive Rate');
     plt.ylabel('True Positive Rate')
-    plt.title('Receiver Operating Characteristic (Per Class)')
-    plt.legend(loc="lower right")
+    plt.title('Krzywa ROC (dla każdej z klas)');
+    plt.legend(loc="lower right");
     plt.show()
-
-    if class_names is None:
-        class_names = ['T-shirt/top', 'Trouser', 'Pullover', 'Dress', 'Coat',
-                       'Sandal', 'Shirt', 'Sneaker', 'Bag', 'Ankle boot']
-
-    y_true = y_test_cat.argmax(axis=1)
-    y_pred_classes = y_pred.argmax(axis=1)
 
     cm = confusion_matrix(y_true, y_pred_classes)
     plt.figure(figsize=(10, 8))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel("Przewidziane klasy")
-    plt.ylabel("Rzeczywiste klasy")
+    plt.xlabel("Przewidziane klasy");
+    plt.ylabel("Rzeczywiste klasy");
     plt.title("Macierz błędów")
-    plt.tight_layout()
+    plt.tight_layout();
     plt.show()
 
-    try:
-        precision = precision_score(y_true, y_pred_classes, average='weighted')
-        recall = recall_score(y_true, y_pred_classes, average='weighted')
-        f1 = f1_score(y_true, y_pred_classes, average='weighted')
-        print(f"\n🔍 Precision (weighted): {precision:.4f}")
-        print(f"🔍 Recall (weighted): {recall:.4f}")
-        print(f"🔍 F1-score (weighted): {f1:.4f}")
+    print("\nRaport klasyfikacji:")
+    print(classification_report(y_true, y_pred_classes, target_names=class_names, zero_division=0))
 
-        print("\n📊 Classification Report:")
-        print(classification_report(y_true, y_pred_classes, target_names=class_names))
+    if history:
+        train_acc = history.get('train_acc', [0])[-1]
+        val_acc = history.get('val_acc', [0])[-1]
+        acc_diff = abs(train_acc - val_acc)
+        print(f"\n🔎 Delta przeuczenia (różnica Train Acc - Val Acc): {acc_diff:.4f}")
+        if acc_diff > 0.05:
+            print("Możliwe przeuczenie modelu (różnica > 5%).")
+        else:
+            print("Brak istotnych oznak przeuczenia.")
 
-    except Exception as e:
-        print(f"⚠️ Warning: Could not calculate classification metrics. Error: {e}")
-
-
-    train_acc = history.history.get('accuracy', [0])[-1]
-    val_acc = history.history.get('val_accuracy', [0])[-1]
-    acc_diff = abs(train_acc - val_acc)
-    print(f"\n🔎 Overfitting delta (Train - Val acc): {acc_diff:.4f}")
-    if acc_diff > 0.05:
-        print("⚠️ Możliwe przeuczenie modelu.")
-    else:
-        print("✅ Brak istotnego przeuczenia.")
