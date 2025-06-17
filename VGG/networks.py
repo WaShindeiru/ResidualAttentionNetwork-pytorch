@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
+from torchvision.models import VGG16_BN_Weights
+
 
 class AttentionBlock(nn.Module):
     def __init__(self, in_features_l, in_features_g, attn_features, up_factor, normalize_attn=True):
