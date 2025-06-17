@@ -1,3 +1,5 @@
 VGG/data_2016/
 VGG/assets
 VGG/logs
+ResNet/results
+ResNet/weights
